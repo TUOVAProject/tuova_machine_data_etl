@@ -1,0 +1,221 @@
+# =====================================================================================
+# mtconnect_data_dag -- settings (EXAMPLE)
+#
+# Copy to mtconnect_data_config.yaml and check at least:
+#
+#   machines                the machine's id in dim_workcenter (REQUIRED)
+#   time.clock_error_hours  clock error of the InfluxDB timestamps (usually 0)
+#   time.timezone           local time
+#   signals                 the names your collector uses when writing to InfluxDB
+#
+# In the test environment dev/setup.sh makes the copy. The real file is not committed.
+#
+# This is a RUNTIME settings file: the load_config step reads the values directly from
+# here. No Airflow Variables -- what this file says is what the run uses.
+#
+#   A change applies to the NEXT run. Airflow does not need a restart, because the
+#   config folder is mounted into the containers.
+#
+#   Location: next to the core package in the venv directory. In the containers
+#   /opt/airflow/config/python-venvs/mtconnect_data_dag/mtconnect_data_config.yaml.
+#
+# NO CREDENTIALS HERE. Addresses, the token and passwords are in the .env file in the
+# same directory -- see .env.example.
+#
+# Structure: the same sections as DEFAULT_CONFIG in the code (vakiot.py). In the code a
+# value is read as config["calculation"]["threshold"].
+#
+# A missing section or key falls back to the default in DEFAULT_CONFIG, and the task
+# log tells which values came from the file and which from the defaults. An unknown
+# key is logged as a warning and does not stop the run -- a typo shows in the log as a
+# value that came from the defaults.
+#
+# The old Finnish file (yhteydet, kohde, aikaikkuna ...) stops the run with
+# instructions. How to upgrade: README, "Upgrading the configuration".
+# =====================================================================================
+
+
+# ── Connection ───────────────────────────────────────────────────────────────────────
+# NO addresses, tokens or passwords. They are in the .env file next to this one
+# (INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_BUCKET, PG_DSN, PG_DSN_FALLBACK).
+# Only the technical connection settings that are not secret stay here.
+connection:
+  # InfluxDB uses a self-signed certificate -> the certificate is not verified.
+  verify_ssl: false
+
+  # Timeout of a single query in milliseconds.
+  timeout_ms: 60000
+
+
+# ── Target ───────────────────────────────────────────────────────────────────────────
+# Where the machine events are written.
+#
+# NOTE: THE DAG DOES NOT CREATE THE TABLE or the schema -- the database owns its schema.
+# The table named below must exist as per the data model and contain all the columns
+# in MACHINE_EVENT_COLUMNS in the code. A missing column stops the run and names it.
+#
+# Some columns have a different name in the data warehouse than in the DAG's
+# calculation (stop_* vs end_*). The mapping is done in the code,
+# vakiot.TARGET_COLUMN_MAP -- not here.
+target:
+  schema: public
+  table: fact_machine_events
+
+  # How a day is handled when it is run again:
+  #
+  #   replace_day  Deletes the day's rows and writes them again. Idempotent: a re-run
+  #                gives the same result. The delete condition is built from
+  #                workcenter_id, source_id, event_type_id and start_date/end_date --
+  #                not from machine_event_id, because the database generates it
+  #                (bigserial). See postgres._paivan_poistoehto.
+  #
+  #   append       Plain INSERT. Creates duplicates -- for special cases only.
+  write_mode: replace_day
+  #write_mode: append
+
+  # Event source id as per the dim_source table:
+  #   1 STAMPING     ERP time stamping
+  #   2 MACHINE API  machine interface   <-- this DAG reads the MTConnect interface
+  #   3 SENSOR       sensor interface
+  #
+  # The value SEPARATES this DAG's rows from the rows of other sources writing to the
+  # same table (e.g. sensor data), and replace_day's delete is limited by it. If this is
+  # changed, rows written with earlier values stay in the table -- the delete no longer
+  # matches them.
+  source_id: 2
+
+
+# ── Machines ─────────────────────────────────────────────────────────────────────────
+# REQUIRED. The machine whose data is fetched. For now exactly one machine per
+# installation; the list is already in a form that allows more later.
+#
+#   workcenter_id  The machine's id in the dim_workcenter table. Copied to every event
+#                  row. The example value is for the test environment.
+#   device         (optional) The device name in InfluxDB, tag source.device_tag.
+#                  Limits the queries to this device. Needed if the same bucket holds
+#                  data from several machines. Without it the whole bucket is queried.
+machines:
+  - workcenter_id: 1
+    #device: SIM-0001
+
+
+# ── Time ─────────────────────────────────────────────────────────────────────────────
+# The time of day is made of two separate things:
+#
+#   clock_error_hours  CLOCK ERROR. The InfluxDB timestamps lag this much behind UTC.
+#                      Constant, does not change with daylight saving time.
+#                      Default 0 = the timestamps are correct.
+#   timezone           LOCAL TIME as an IANA name. Sets the day boundaries
+#                      (local 00:00 -> 24:00) and the fields start_date/start_time.
+#                      Daylight saving time follows from this automatically.
+#
+# In Finland the total correction
+# is 3 h in summer and 2 h in winter.
+#
+# The clock error is applied in two places: it is SUBTRACTED from the query window
+# (InfluxDB is queried on its own, wrong timeline) and ADDED to the fetched data.
+# If you change these, the day boundary moves -- first read the DAG docstring
+# "AIKALEIMOJEN KORJAUS".
+time:
+  clock_error_hours: 0
+  timezone: Europe/Helsinki
+
+  # How much is fetched outside the target day. Needed because the difference of the
+  # counters drops the first sample of the window, and because the periods of event
+  # types 8 and 10 can continue over the day boundary.
+  # 12 h in both directions = a 48 h query for a 24 h partition (on a daylight saving
+  # day the partition is 23 or 25 h).
+  lookback_hours: 12
+  lookahead_hours: 12
+
+  # Warm-up query for the state-like signals (overrides and program). They are written
+  # only when the value changes, so the day's window may have no readings even though
+  # the value is known.
+  warmup_days: 7
+
+
+# ── Source ───────────────────────────────────────────────────────────────────────────
+# The structure of the source in InfluxDB: which tag names the measured item
+# (signals.*.name is a value of this tag) and which tag names the device
+# (machines[].device is a value of this tag).
+source:
+  item_tag: name
+  device_tag: device
+
+
+# ── Signals ──────────────────────────────────────────────────────────────────────────
+# The signals used by the calculation and their names in InfluxDB. The left side is
+# the calculation's logical name (do not change), the right side tells where the
+# signal is found: measurement and name (a value of the source.item_tag tag). The
+# queries are derived from this automatically.
+#
+# Below are the names used by the MTConnect collector of the TUOVA environment, which
+# are also the defaults. With another collector or controller, change only the names.
+#
+# The time counters (*_time) are cumulative: the information is in the difference of
+# the readings. unit tells the counter's unit (ms, s, min, h); the calculation
+# converts it to seconds.
+#
+# All signals except spindle_override are required: if one is missing from the
+# fetched data altogether, the run stops and names the signal and its source name.
+signals:
+  # Cumulative time counters. Fetched as per-minute maximums.
+  running_time:     {measurement: mtc_metrics, name: ptotalrunningtime,    unit: s}   # machine powered on
+  operating_time:   {measurement: mtc_metrics, name: ptotaloperatingtime,  unit: s}   # program running
+  cutting_time:     {measurement: mtc_metrics, name: ptotalcuttingtime,    unit: s}   # cutting
+  spindle_time:     {measurement: mtc_metrics, name: ptotalspindleruntime, unit: s}   # spindle rotating
+
+  # Set values and the program. Written only when changed -> also a warm-up query.
+  feed_override:    {measurement: mtc_metrics, name: pfovr}       # feed override %
+  spindle_override: {measurement: mtc_metrics, name: s1ovr}       # spindle override % (optional)
+  program:          {measurement: mtc_status,  name: pprogram}    # NC program name
+
+  # Part counter. Fetched raw, no warm-up.
+  part_count:       {measurement: mtc_metrics, name: ppartcount}
+
+
+# ── Calculation ──────────────────────────────────────────────────────────────────────
+# Thresholds of the state classification. Changing these changes all derived events
+# -- old partitions are not comparable with new ones.
+calculation:
+  # Time resolution at which the counters are summed before classification.
+  aggr: 1min
+
+  # Counter growth per minute (in seconds) above which the machine is considered
+  # running. running_time > threshold -> Idle, operating_time > threshold -> cutting.
+  threshold: 5.0
+
+  # Feed override % above which cutting is "Efficient", below it "Inefficient".
+  override_threshold: 50.0
+
+  # INTERPRETATION (TULKINTA): a break longer than this splits a production period
+  # (event type 8). The specification only says "a clear production break" without
+  # a number. To be verified against the Excel workbook.
+  production_break_min: 30.0
+
+  # Plausibility limits of the cycle time in minutes. Shorter is a measurement
+  # artefact, longer is in practice a break between parts -- a cycle time outside the
+  # limits is left empty. Raise the upper limit if machining one part takes over 2 h.
+  min_cycle_min: 0.1
+  max_cycle_min: 120.0
+
+
+# ── Files ────────────────────────────────────────────────────────────────────────────
+# The CSV partitions are a debugging aid, not the target system. The actual result
+# goes to PostgreSQL.
+files:
+  # Path inside the containers, under the venv directory. On the host
+  # airflow/config/python-venvs/mtconnect_data_dag/data.
+  # Production mounts only dags/logs/config/plugins, so the data lives on the config
+  # side -- /opt/airflow/data is not available there.
+  # A DAG-specific path also keeps DAGs from overwriting each other's files.
+  data_root: /opt/airflow/config/python-venvs/mtconnect_data_dag/data
+
+  partition_prefix: state-events
+  combined_file: state-events-all.csv
+
+  # How many of the newest partitions go into the combined file.
+  merge_window_days: 90
+
+  # Intermediate data of a failed run is kept for investigation; older is removed.
+  staging_max_age_days: 7

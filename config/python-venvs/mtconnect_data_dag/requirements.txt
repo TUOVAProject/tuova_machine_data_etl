@@ -1,0 +1,40 @@
+# mtconnect_data_dag -- ulkoisen virtuaaliympäristön sisältö.
+#
+# Venv luodaan tästä KUMMASSAKIN ympäristössä erikseen, kontin sisältä:
+#
+#   docker exec <worker> python -m venv \
+#     /opt/airflow/config/python-venvs/mtconnect_data_dag/venv
+#   docker exec <worker> \
+#     /opt/airflow/config/python-venvs/mtconnect_data_dag/venv/bin/pip install \
+#     -r /opt/airflow/config/python-venvs/mtconnect_data_dag/requirements.txt
+#
+# Venviä EI kopioida ympäristöstä toiseen: python -m venv linkittää bin/pythonin
+# alustan tulkkiin, joten kopioitu venv hajoaa jos tulkin versio on eri. Luonti
+# kontin sisältä varmistaa myös, että pickle-serialisointi Airflow'n ja venvin
+# välillä toimii -- @task.external_python välittää argumentit picklenä.
+#
+# Versiot on pinnattu Airflow-imagen versioihin, jotta sama koodi laskee saman
+# tuloksen kaikkialla.
+pandas==2.3.3
+influxdb-client==1.47.0
+psycopg2-binary==2.9.12
+PyYAML==6.0.3
+python-dotenv==1.1.1
+pyarrow==24.0.0
+
+# Tulisi pandasin riippuvuutena, mutta pinnattu: numpy 2.5 vanhentaa yksiköttömän
+# timedelta64:n, jota pandas 2.3.3 käyttää pd.Timedelta(minutes=...)-kutsuissa.
+# Uudempi numpy tulostaa varoituksen joka kutsusta ja tulevassa versiossa kaatuu.
+# Nosta vasta pandasin päivityksen yhteydessä ja aja dev/test.sh.
+numpy==2.4.6
+
+# Aikavyöhyketietokanta (IANA). Asetuksen aikaikkuna.timezone tulkinta ja kesä-/
+# talviajan siirtymät luetaan tästä -- vakioimagessa ei ole järjestelmän tzdataa.
+# Tulisi mukaan pandasin riippuvuutena, mutta on tässä näkyvissä koska laskenta
+# nojaa siihen suoraan. Päivitä kun kellonsiirtosäännöt muuttuvat.
+tzdata==2026.3
+
+# Airflow tarkistaa venvin pendulum-version ja kirjaa lokiin tracebackin jos sitä ei
+# ole. Ajo toimii ilmankin, mutta virhe on harhaanjohtava lokissa. Pinnattu
+# Airflow-imagen versioon, jottei aikaleimojen käsittely eroa ympäristöjen välillä.
+pendulum==3.2.0

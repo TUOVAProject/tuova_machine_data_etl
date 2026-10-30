@@ -1,0 +1,30 @@
+# Tunnukset ja paikalliset asetukset
+.env
+.env.*
+!.env.example
+config/python-venvs/*/mtconnect_data_config.yaml
+
+# Airflow: airflow-init generoi airflow.cfg:n, ja se sisältää fernet/jwt/secret-avaimet
+config/airflow.cfg
+logs/
+plugins/
+
+# DAGin venv ja tuotokset (luodaan kontissa)
+config/python-venvs/*/venv/
+config/python-venvs/*/data/
+
+# Generoitu testidata (luodaan aina uudelleen generaattorilla)
+dev/testdata/generated/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editori / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Omat luonnokset
+artikkelit/
